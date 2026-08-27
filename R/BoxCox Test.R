@@ -641,74 +641,53 @@ boxcox <- function(formula,
       )
   }
 
-  # ============================================================
-  # 15. CONFIDENCE INTERVAL
-  # ============================================================
+# ============================================================
+# 15. CONFIDENCE INTERVAL
+# ============================================================
 
-  # IMPORTANT:
-  # Stata's level(95), level(99), etc.
-  # are percentages, not proportions.
+# Stata usa level(95), level(99), etc.
+# Por lo tanto level se expresa como porcentaje.
 
-  alpha <-
-    1 - level / 100
+alpha <- 1 - (level / 100)
 
-  zcrit <-
-    qnorm(
-      1 - alpha / 2
-    )
+# Critical value
+zcrit <- qnorm(1 - alpha / 2)
 
-  z_transform <-
-    parhat /
-    se_transform
+# z statistic
+z_transform <- parhat / se_transform
 
-  p_transform <-
-    2 *
-    pnorm(
-      abs(z_transform),
-      lower.tail = FALSE
-    )
+# two-sided p-value
+p_transform <- 2 * pnorm(
+  abs(z_transform),
+  lower.tail = FALSE
+)
 
-  lower <-
-    parhat -
-    zcrit *
-    se_transform
+# Confidence interval
+lower <- parhat - zcrit * se_transform
+upper <- parhat + zcrit * se_transform
 
-  upper <-
-    parhat +
-    zcrit *
-    se_transform
-
-  transformation_table <-
-    data.frame(
-
-      Coefficient =
-        parhat,
-
-      `Std. err.` =
-        se_transform,
-
-      z =
-        z_transform,
-
-      `P>|z|` =
-        p_transform,
-
-      Lower =
-        lower,
-
-      Upper =
-        upper,
-
-      row.names =
-        paste0(
-          "/",
-          names(parhat)
-        ),
-
-      check.names =
-        FALSE
-    )
-
+transformation_table <- data.frame(
+  
+  Coefficient = parhat,
+  
+  `Std. err.` = se_transform,
+  
+  z = z_transform,
+  
+  `P>|z|` = p_transform,
+  
+  Lower = lower,
+  
+  Upper = upper,
+  
+  row.names = paste0(
+    "/",
+    names(parhat)
+  ),
+  
+  check.names = FALSE
+)
+  
   # ============================================================
   # 16. SCALE-VARIANT PARAMETERS
   # ============================================================
