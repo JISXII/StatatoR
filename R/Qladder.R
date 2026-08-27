@@ -1,17 +1,13 @@
 #' Ladder-of-powers quantile-normal plots
 #'
-#' Produces the nine quantile-normal plots used by Stata's qladder
-#' command.
+#' Produces nine quantile-normal plots corresponding to the
+#' ladder of powers used by Stata's qladder command.
 #'
-#' The transformations are:
-#' inverse-cubic, inverse-square, inverse, inverse-root,
-#' log, square-root, identity, square, and cube.
-#'
-#' @param x Numeric vector.
+#' @param x Numeric vector. Must contain only positive values.
 #' @param main Optional overall title.
-#' @param digits Number of digits used in plot labels.
+#' @param digits Number of digits used for numerical labels.
 #'
-#' @return Invisibly returns a data frame containing all nine
+#' @return Invisibly returns a data frame containing the nine
 #' transformed variables.
 #'
 #' @examples
@@ -45,7 +41,7 @@ qladder <- function(x,
     stop("'x' must contain at least 3 finite observations.")
   }
 
-  # All transformations used by qladder require x > 0
+  # Box-Cox / ladder transformations require positive values
   if (any(x <= 0)) {
     stop(
       "'x' must contain only positive values. ",
@@ -54,57 +50,50 @@ qladder <- function(x,
   }
 
   # ============================================================
-  # 2. LADDER OF POWERS
+  # 2. TRANSFORMATIONS
   # ============================================================
 
   transformations <- list(
 
-    "Inverse cubic" =
-      1 / x^3,
+    "Inverse cubic" = 1 / x^3,
 
-    "Inverse square" =
-      1 / x^2,
+    "Inverse square" = 1 / x^2,
 
-    "Inverse" =
-      1 / x,
+    "Inverse" = 1 / x,
 
-    "Inverse root" =
-      1 / sqrt(x),
+    "Inverse root" = 1 / sqrt(x),
 
-    "Log" =
-      log(x),
+    "Log" = log(x),
 
-    "Square root" =
-      sqrt(x),
+    "Square root" = sqrt(x),
 
-    "Identity" =
-      x,
+    "Identity" = x,
 
-    "Square" =
-      x^2,
+    "Square" = x^2,
 
-    "Cube" =
-      x^3
+    "Cube" = x^3
   )
 
   # ============================================================
-  # 3. SAVE CURRENT GRAPHICS SETTINGS
+  # 3. SAVE GRAPHICAL PARAMETERS
   # ============================================================
 
   old_par <- par(no.readonly = TRUE)
 
+  # Restore graphical parameters when function exits
   on.exit(
     par(old_par),
     add = TRUE
   )
 
   # ============================================================
-  # 4. GRAPH MATRIX
+  # 4. GRAPHICAL LAYOUT
   # ============================================================
 
   par(
     mfrow = c(3, 3),
-    oma = c(0, 0, 3, 0)
+    mar = c(3.5, 3.5, 2.5, 1),
+    oma = c(0, 0, ifelse(is.null(main), 0, 2), 0)
   )
 
   # ============================================================
@@ -119,7 +108,10 @@ qladder <- function(x,
       z,
       main = nm,
       pch = 16,
-      col = "blue"
+      col = "blue",
+      cex = 0.7,
+      xlab = "Normal quantiles",
+      ylab = "Sample quantiles"
     )
 
     qqline(
@@ -138,14 +130,14 @@ qladder <- function(x,
     mtext(
       main,
       outer = TRUE,
-      line = 1,
+      line = 0.5,
       font = 2,
       cex = 1.2
     )
   }
 
   # ============================================================
-  # 7. RETURN TRANSFORMED DATA
+  # 7. RETURN DATA
   # ============================================================
 
   result <- data.frame(
