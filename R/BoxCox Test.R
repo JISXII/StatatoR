@@ -872,18 +872,18 @@ transformation_table <- data.frame(
     sep = ""
   )
 
-  cat(
-    "LR chi2(",
-    df_model,
-    ")      = ",
-    formatC(
-      LR_model,
-      digits = 2,
-      format = "f"
-    ),
-    "\n",
-    sep = ""
-  )
+  #cat(
+  #  "LR chi2(",
+  #  df_model,
+  #  ")      = ",
+  #  formatC(
+  #    LR_model,
+  #    digits = 2,
+  #    format = "f"
+  #  ),
+  #  "\n",
+  #  sep = ""
+  #)
 
   cat(
     "Log likelihood = ",
@@ -892,12 +892,12 @@ transformation_table <- data.frame(
     sep = ""
   )
 
-  cat(
-    "Prob > chi2     = ",
-    fmt_p(p_model),
-    "\n\n",
-    sep = ""
-  )
+  #cat(
+  #  "Prob > chi2     = ",
+  #  fmt_p(p_model),
+  #  "\n\n",
+  #  sep = ""
+  #)
 
   # ============================================================
   # 21. TRANSFORMATION TABLE
