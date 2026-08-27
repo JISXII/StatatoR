@@ -1,3 +1,17 @@
+#' Box-Cox Regression
+#'
+#' Estimates Box-Cox regression models using maximum likelihood.
+#'
+#' @param formula Model formula.
+#' @param data Data frame containing the variables.
+#' @param model Box-Cox model specification.
+#' @param notrans Variables that should not be transformed.
+#' @param level Confidence level.
+#' @param digits Number of decimal places.
+#'
+#' @return A Box-Cox regression result.
+#' @export
+
 boxcox <- function(formula, data, model = "lhsonly", notrans = NULL,
                    level = 0.95) {
   
