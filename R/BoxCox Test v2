@@ -1,7 +1,11 @@
 # ================================================================
-# boxcoxtest(): replica en R del comando `boxcox` de Stata
-# (basado en el manual [R] boxcox -- ver "Methods and formulas")
+# stata_boxcox(): replica en R del comando `boxcox` de Stata
+# (basado en el manual [R] boxcox — ver "Methods and formulas")
 # ================================================================
+
+#' @importFrom stats model.frame model.response model.matrix optim optimize
+#' @importFrom stats qnorm pnorm pchisq setNames
+NULL
 
 .bc_transform <- function(x, lam) {
   if (abs(lam) > 1e-10) (x^lam - 1) / lam else log(x)
@@ -30,12 +34,12 @@
   if (!noconstant) W <- cbind(`_cons` = rep(1, N), W)  # rep(,N) evita el
   # reciclaje erroneo de cbind() cuando Xt y Z son ambos NULL (modelo solo-constante)
 
-  fit <- .lm.fit(W, y_t)
+  fit <- stats::.lm.fit(W, y_t)
   SSR <- sum(fit$residuals^2)
   sigma2 <- SSR / N
   ll <- (-N / 2) * (log(2 * pi) + 1 + log(sigma2)) + jac
 
-  list(ll = ll, sigma2 = sigma2, coef = setNames(fit$coefficients, colnames(W)),
+  list(ll = ll, sigma2 = sigma2, coef = stats::setNames(fit$coefficients, colnames(W)),
        W = W, N = N, resid = fit$residuals)
 }
 
@@ -68,16 +72,18 @@
                 N = res$N, resid = res$resid))
   }
 
-  st <- if (!is.null(start)) start[free] else setNames(rep(1, length(free)), free)
+  st <- if (!is.null(start)) start[free] else stats::setNames(rep(1, length(free)), free)
 
   if (length(free) == 1) {
-    o <- optimize(function(p) objective(setNames(p, free)), interval = c(-5, 5),
+    o <- stats::optimize(function(p) objective(stats::setNames(p, free)), interval = c(-5, 5),
                   tol = 1e-8)
-    par <- setNames(o$minimum, free)
+    par <- stats::setNames(o$minimum, free)
+    negll <- o$objective
   } else {
-    o <- optim(st, objective, method = "Nelder-Mead",
+    o <- stats::optim(st, objective, method = "Nelder-Mead",
                control = list(reltol = 1e-12, maxit = 2000))
-    par <- setNames(o$par, free)
+    par <- stats::setNames(o$par, free)
+    negll <- o$value
   }
 
   res <- .cll(y, Xtrans, Z, model,
@@ -115,6 +121,42 @@
 # ----------------------------------------------------------------
 # funcion principal
 # ----------------------------------------------------------------
+
+#' Replica del comando boxcox de Stata
+#'
+#' Ajusta los cuatro modelos de regresion Box-Cox (lhsonly, rhsonly,
+#' lambda, theta) por maxima verosimilitud, siguiendo exactamente las
+#' formulas de "Methods and formulas" del manual \[R\] boxcox de Stata.
+#'
+#' @param formula Formula tipo \code{depvar ~ indepvars}.
+#' @param data Data frame con las variables.
+#' @param model Uno de \code{"lhsonly"} (default), \code{"rhsonly"},
+#'   \code{"lambda"} o \code{"theta"}.
+#' @param notrans Vector de nombres de variables que NO se transforman.
+#' @param noconstant Logico; omitir la constante (no recomendado, ver
+#'   nota del manual de Stata sobre problemas de convergencia).
+#' @param level Nivel de confianza para los IC de lambda/theta.
+#' @param lrtest Logico; calcular la tabla de tests LR por variable
+#'   ("estimates of scale-variant parameters").
+#' @param test_values Valores fijos contra los que testear
+#'   lambda/theta (por defecto -1, 0, 1).
+#' @param start Vector opcional con valores iniciales para la
+#'   optimizacion, con nombres \code{"lambda"} y/o \code{"theta"}.
+#'
+#' @return Un objeto de clase \code{stata_boxcox} (lista) con, entre
+#'   otros: \code{ll} (log-verosimilitud), \code{par_table}
+#'   (lambda/theta con SE e IC), \code{coef} (coeficientes),
+#'   \code{scale_table} (tests LR por variable) y \code{fixed_table}
+#'   (tests LR contra formas funcionales fijas).
+#'
+#' @examples
+#' \dontrun{
+#' m <- stata_boxcox(bpdiast ~ bmi + tcresult + age + sex, data = nhanes2,
+#'                    model = "theta", notrans = c("age", "sex"))
+#' print(m)
+#' }
+#'
+#' @export
 stata_boxcox <- function(formula, data,
                           model = c("lhsonly", "rhsonly", "lambda", "theta"),
                           notrans = NULL, noconstant = FALSE,
@@ -122,10 +164,10 @@ stata_boxcox <- function(formula, data,
                           test_values = c(-1, 0, 1), start = NULL) {
 
   model <- match.arg(model)
-  mf <- model.frame(formula, data)
-  y <- model.response(mf)
+  mf <- stats::model.frame(formula, data)
+  y <- stats::model.response(mf)
   depvar <- as.character(formula[[2]])
-  Xfull <- model.matrix(formula, mf)[, -1, drop = FALSE]  # sin intercepto propio
+  Xfull <- stats::model.matrix(formula, mf)[, -1, drop = FALSE]  # sin intercepto propio
   vnames <- colnames(Xfull)
 
   if (model == "lhsonly") {
@@ -172,10 +214,10 @@ stata_boxcox <- function(formula, data,
     V <- tryCatch(solve(full$hessian), error = function(e) matrix(NA, length(full$par), length(full$par)))
     se_par <- sqrt(diag(V))
   }
-  z_alpha <- qnorm(1 - (1 - level) / 2)
+  z_alpha <- stats::qnorm(1 - (1 - level) / 2)
   par_tab <- if (length(full$par)) {
     zval <- full$par / se_par
-    pval <- 2 * pnorm(-abs(zval))
+    pval <- 2 * stats::pnorm(-abs(zval))
     data.frame(coef = full$par, se = se_par, z = zval, p = pval,
                lower = full$par - z_alpha * se_par,
                upper = full$par + z_alpha * se_par,
@@ -197,7 +239,7 @@ stata_boxcox <- function(formula, data,
       chi2 <- if (!is.null(red)) 2 * (full$ll - red$ll) else NA_real_
       rows[[nm]] <- data.frame(group = if (nm %in% z_names) "Notrans" else "Trans",
                                 variable = nm, coef = full$coef[[nm]],
-                                chi2 = chi2, df = 1, p = pchisq(chi2, 1, lower.tail = FALSE))
+                                chi2 = chi2, df = 1, p = stats::pchisq(chi2, 1, lower.tail = FALSE))
     }
     scale_tab <- do.call(rbind, rows)
     rownames(scale_tab) <- NULL
@@ -216,7 +258,7 @@ stata_boxcox <- function(formula, data,
       lbl <- paste(full$free, "=", c0, collapse = ", ")
       rows[[as.character(c0)]] <- data.frame(H0 = lbl, ll_restricted = r$ll,
                                               chi2 = chi2, df = df,
-                                              p = pchisq(chi2, df, lower.tail = FALSE))
+                                              p = stats::pchisq(chi2, df, lower.tail = FALSE))
     }
     fixed_tab <- do.call(rbind, rows); rownames(fixed_tab) <- NULL
   }
@@ -225,7 +267,7 @@ stata_boxcox <- function(formula, data,
               x_names = x_names, z_names = z_names, N = N,
               ll = full$ll, ll_comparison = if (!is.null(comp)) comp$ll else NA_real_,
               chi2_global = chi2_global, df_m = df_m,
-              p_global = if (is.na(chi2_global)) NA_real_ else pchisq(chi2_global, df_m, lower.tail = FALSE),
+              p_global = if (is.na(chi2_global)) NA_real_ else stats::pchisq(chi2_global, df_m, lower.tail = FALSE),
               par_table = par_tab, coef = full$coef, sigma2 = full$sigma2,
               sigma = sqrt(full$sigma2), scale_table = scale_tab,
               fixed_table = fixed_tab, level = level, resid = full$resid)
@@ -233,6 +275,13 @@ stata_boxcox <- function(formula, data,
   out
 }
 
+#' Imprime un objeto stata_boxcox
+#'
+#' @param x Objeto de clase \code{stata_boxcox}.
+#' @param digits Numero de decimales a mostrar.
+#' @param ... Argumentos adicionales (no usados).
+#'
+#' @export
 print.stata_boxcox <- function(x, digits = 7, ...) {
   cat("Modelo Box-Cox tipo '", x$model, "'  (depvar: ", x$depvar, ")\n", sep = "")
   cat(sprintf("Number of obs = %d\n", x$N))
@@ -250,12 +299,12 @@ print.stata_boxcox <- function(x, digits = 7, ...) {
     print(round(x$par_table, digits)); cat("\n")
   }
 
-  cat("Coeficientes (a nivel del optimo lambda/theta):\n")
+  cat("Estimates of scale-variant parameters (coeficientes vs LR test):\n")
   cf <- data.frame(coef = x$coef)
   print(round(cf, digits)); cat("\n")
 
   if (!is.null(x$scale_table)) {
-    cat("LR tests por variable (H0: coeficiente = 0) -- 'scale-variant parameters':\n")
+    cat("LR tests por variable (H0: coeficiente = 0):\n")
     print(x$scale_table, digits = digits); cat("\n")
   }
 
