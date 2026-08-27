@@ -5,14 +5,34 @@
 #' behavior, scaling, and output format of Stata's `boxcox` command. It supports 
 #' simultaneous transformation parameters (theta and lambda) and allows specifying 
 #' variables to remain untransformed.
+#' 
+#' @details
+#' **Syntax Guide:**
+#' * **Continuous vs. Dummy Variables:** The Box-Cox mathematical transformation strictly 
+#'   requires values greater than zero. If your model includes binary/dummy variables or 
+#'   variables containing zeros, you MUST pass their names as a character vector to the 
+#'   `notrans` argument (e.g., \code{notrans = c("dummy1", "dummy2")}).
+#' * **Model Selection:** 
+#'   - \code{"theta"}: (Default) Transforms dependent and independent variables with different parameters.
+#'   - \code{"lambda"}: Transforms dependent and independent variables with the same parameter.
+#'   - \code{"lhsonly"}: Transforms ONLY the dependent variable (Left-Hand Side).
+#'   - \code{"rhsonly"}: Transforms ONLY the independent variables (Right-Hand Side).
+#' 
+#' **When to use `standardize = TRUE`:**
+#' It is highly recommended to keep \code{standardize = TRUE} if your independent variables 
+#' have large numerical magnitudes (e.g., nominal prices, budgets, or population). 
+#' Because the Box-Cox algorithm evaluates large power transformations, high raw values can 
+#' cause matrix inversions to fail computationally (floating-point underflow), stopping the 
+#' optimization prematurely. Standardizing internally prevents this without altering the scale 
+#' or the interpretation of your final coefficients. Set to \code{FALSE} only if your data 
+#' is already scaled or for debugging purposes.
 #'
 #' @param formula an object of class "formula" (or one that can be coerced to that class).
 #' @param data a data frame, list or environment containing the variables in the model.
 #' @param notrans a character vector specifying the names of independent variables that 
 #' should NOT be transformed (e.g., dummy variables).
-#' @param model character string specifying the model type: \code{"theta"} (default, 
-#' different parameters for LHS and RHS), \code{"lambda"} (same parameter), 
-#' \code{"lhsonly"}, or \code{"rhsonly"}.
+#' @param model character string specifying the model type: \code{"theta"} (default), 
+#' \code{"lambda"}, \code{"lhsonly"}, or \code{"rhsonly"}.
 #' @param init_vals numeric vector of initial values for the optimizer.
 #' @param level numeric value between 0 and 1 specifying the confidence level. Default is 0.95.
 #' @param digits integer indicating the number of decimal places to print. Default is 6.
@@ -20,21 +40,15 @@
 #' behavior of not subtracting omitted collinear variables from the global Chi2 degrees of 
 #' freedom, and forcing 1 df for the lower restricted tests. If \code{FALSE}, calculates 
 #' statistically correct degrees of freedom.
-#' @param trace logical. If \code{TRUE} (default), prints the iteration log for the 
-#' likelihood maximization process.
+#' @param standardize logical. If \code{TRUE} (default), internally standardizes the design 
+#' matrix during optimization to prevent floating-point underflow with large-scale data.
+#' @param trace logical. If \code{TRUE} (default), prints the iteration log.
 #'
 #' @return A list containing the estimated parameters, log-likelihood, coefficients, and standard errors.
 #' @export
-#'
-#' @examples
-#' \dontrun{
-#' # Assuming 'df' is your dataset and 'dummy1' is a binary variable
-#' result <- box.cox(y ~ x1 + x2 + dummy1, data = df, 
-#'                   notrans = "dummy1", model = "theta")
-#' }
 box.cox <- function(formula, data, notrans = NULL, model = "theta", 
                     init_vals = NULL, level = 0.95, digits = 6,
-                    stata_df_compat = TRUE, trace = TRUE) {
+                    stata_df_compat = TRUE, standardize = TRUE, trace = TRUE) {
   
   # -------------------------------------------------------------
   # 1. INPUT VALIDATION & SETUP
@@ -53,12 +67,9 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
   y <- model.response(mf)
   y_name <- names(mf)[1] 
   
-  # NEW: Check if dependent variable is continuous
   if (!is.numeric(y) || is.factor(y) || length(unique(y)) <= 2) {
     stop(sprintf("The dependent variable '%s' must be a continuous numeric vector.", y_name))
   }
-  
-  # NEW: Formal strictly positive check for dependent variable
   if (any(y <= 0, na.rm = TRUE)) {
     stop(sprintf("The dependent variable '%s' must contain only strictly positive values (y > 0).", y_name))
   }
@@ -85,7 +96,6 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
     X_notrans <- NULL
   }
   
-  # NEW: Formal strictly positive check for independent variables to be transformed
   if (model != "lhsonly") {
     if (any(X_trans <= 0, na.rm = TRUE)) {
       stop("All independent variables designated for transformation must contain only strictly positive values (x > 0).")
@@ -101,10 +111,17 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
   }
   
   calc_ll <- function(t_val, l_val) {
-    yt <- bc_std(y, t_val)
+    yt <- if (model == "rhsonly") y else bc_std(y, t_val)
     Xt <- if (model == "lhsonly") X_trans else apply(X_trans, 2, function(col) bc_std(col, l_val))
     
     X_all <- if (is.null(X_notrans)) cbind(1, Xt) else cbind(1, Xt, X_notrans)
+    
+    if (standardize) {
+      for (j in 2:ncol(X_all)) {
+        sd_v <- sd(X_all[, j])
+        if (sd_v > 1e-8) X_all[, j] <- (X_all[, j] - mean(X_all[, j])) / sd_v
+      }
+    }
     
     if (any(!is.finite(yt)) || any(!is.finite(X_all))) return(-1e10)
     res <- tryCatch(qr.resid(qr(X_all), yt), error = function(e) NULL)
@@ -149,7 +166,8 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
     
     opt <- optim(par = start_vals, fn = obj_fun, method = "L-BFGS-B", 
                  lower = -5, upper = 5, hessian = TRUE,
-                 control = list(maxit = 3000, factr = 1e7))
+                 control = list(maxit = 5000, factr = 1e5, 
+                                ndeps = rep(1e-3, length(start_vals))))
     return(opt)
   }
   
@@ -169,7 +187,7 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
   ci_low <- opt_full$par - z_crit * se_params
   ci_high <- opt_full$par + z_crit * se_params
   
-  yt_final <- bc_std(y, t_final)
+  yt_final <- if (model == "rhsonly") y else bc_std(y, t_final)
   Xt_final <- if (model == "lhsonly") X_trans else apply(X_trans, 2, function(col) bc_std(col, l_final))
   
   X_final_mat <- cbind(Intercept = 1, Xt_final)
@@ -234,7 +252,7 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
   # -------------------------------------------------------------
   cat("\n")
   if (length(omitidas) > 0) {
-    cat(sprintf("note: %s omitted because of collinearity.\n\n", paste(omitidas, collapse = ", ")))
+    cat(sprintf("note: %s omitted.\n\n", paste(omitidas, collapse = ", ")))
   }
   
   fmt_ll <- paste0("%-15.", digits, "f")
