@@ -1,0 +1,8 @@
+Package: statator
+Type: Package
+Title: Econometric Tools for R
+Version: 0.1.0
+Authors@R: person("Javier", "Infante", role = c("aut", "cre"))
+Description: Tools for econometric analysis and replication of Stata procedures.
+License: MIT
+Encoding: UTF-8
