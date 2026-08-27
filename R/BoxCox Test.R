@@ -8,7 +8,7 @@
 #' @param notrans Variables that should not be transformed.
 #' @param level Confidence level.
 #' @param digits Number of decimal places.
-#' @param noconstant Suppress the constant term.
+#' @param noconstant Suppress constant.
 #' @param trace Display optimization iterations.
 #'
 #' @return A Box-Cox regression result.
@@ -16,12 +16,10 @@
 
 boxcox <- function(formula,
                    data,
-                   model = c(
-                     "lhsonly",
-                     "rhsonly",
-                     "lambda",
-                     "theta"
-                   ),
+                   model = c("lhsonly",
+                             "rhsonly",
+                             "lambda",
+                             "theta"),
                    notrans = NULL,
                    level = 95,
                    digits = 4,
@@ -39,9 +37,7 @@ boxcox <- function(formula,
       level <= 0 ||
       level >= 100) {
 
-    stop(
-      "'level' must be between 0 and 100."
-    )
+    stop("'level' must be between 0 and 100.")
   }
 
   if (!is.numeric(digits) ||
@@ -49,10 +45,17 @@ boxcox <- function(formula,
       digits < 0 ||
       digits != floor(digits)) {
 
-    stop(
-      "'digits' must be a non-negative integer."
-    )
+    stop("'digits' must be a non-negative integer.")
   }
+
+  if (is.null(notrans)) {
+    notrans <- character(0)
+  }
+
+  if (!is.character(notrans)) {
+    stop("'notrans' must contain variable names.")
+  }
+
 
   # ============================================================
   # 2. MODEL FRAME
@@ -67,75 +70,54 @@ boxcox <- function(formula,
   y <- model.response(mf)
 
   if (!is.numeric(y)) {
-
-    stop(
-      "The dependent variable must be numeric."
-    )
+    stop("The dependent variable must be numeric.")
   }
 
-  if (any(!is.finite(y))) {
+  if (model %in% c("lhsonly",
+                   "lambda",
+                   "theta")) {
 
-    stop(
-      "The dependent variable contains non-finite values."
-    )
+    if (any(!is.finite(y))) {
+      stop("The dependent variable contains non-finite values.")
+    }
+
+    if (any(y <= 0)) {
+      stop(
+        "The dependent variable must be strictly positive ",
+        "for this Box-Cox model."
+      )
+    }
   }
 
+
   # ============================================================
-  # 3. MODEL TERMS
+  # 3. DESIGN MATRIX
   # ============================================================
 
-  terms_obj <- terms(formula)
-
-  rhs_vars <- all.vars(
-    delete.response(
-      terms_obj
-    )
+  X <- model.matrix(
+    formula,
+    mf
   )
 
-  # Variables appearing in the RHS
+  if (noconstant &&
+      "(Intercept)" %in% colnames(X)) {
+
+    X <- X[
+      ,
+      colnames(X) != "(Intercept)",
+      drop = FALSE
+    ]
+  }
+
+
+  # ============================================================
+  # 4. IDENTIFY VARIABLES THAT ARE NOT TRANSFORMED
+  # ============================================================
+
   rhs_terms <- attr(
-    terms_obj,
+    terms(formula),
     "term.labels"
   )
-
-  # ============================================================
-  # 4. NOTRANS
-  # ============================================================
-
-  if (is.null(notrans)) {
-
-    notrans <- character(0)
-
-  }
-
-  if (!is.character(notrans)) {
-
-    stop(
-      "'notrans' must contain variable names."
-    )
-  }
-
-  unknown_notrans <- setdiff(
-    notrans,
-    rhs_vars
-  )
-
-  if (length(unknown_notrans) > 0) {
-
-    stop(
-      paste0(
-        "Variables in 'notrans' not found in the RHS: ",
-        paste(
-          unknown_notrans,
-          collapse = ", "
-        )
-      )
-    )
-  }
-
-  # ============================================================
-  # 5. VARIABLES TO TRANSFORM
-  # ============================================================
 
   transform_x <-
     model %in% c(
@@ -144,66 +126,71 @@ boxcox <- function(formula,
       "theta"
     )
 
-  transformed_vars <- if (transform_x) {
+  transform_cols <-
+    rep(FALSE, ncol(X))
 
-    setdiff(
-      rhs_vars,
-      notrans
-    )
+  names(transform_cols) <-
+    colnames(X)
 
-  } else {
+  if (transform_x) {
 
-    character(0)
+    for (j in seq_along(transform_cols)) {
 
-  }
+      nm <- colnames(X)[j]
 
-  # ============================================================
-  # 6. CHECK POSITIVITY
-  # ============================================================
+      # Constant is never transformed
+      if (nm == "(Intercept)") {
+        transform_cols[j] <- FALSE
+        next
+      }
 
-  # ------------------------------------------------------------
-  # LHS
-  # ------------------------------------------------------------
+      # Determine whether column corresponds
+      # to one of the notrans variables
+      keep_untransformed <- FALSE
 
-  if (model %in% c(
-    "lhsonly",
-    "lambda",
-    "theta"
-  )) {
+      for (v in notrans) {
 
-    if (any(y <= 0)) {
+        if (nm == v ||
+            startsWith(
+              nm,
+              paste0(v)
+            )) {
 
-      stop(
-        "The dependent variable must be strictly positive ",
-        "for this Box-Cox model."
-      )
+          keep_untransformed <- TRUE
+          break
+        }
+      }
+
+      transform_cols[j] <-
+        !keep_untransformed
     }
   }
 
-  # ------------------------------------------------------------
-  # RHS
-  # ------------------------------------------------------------
 
-  if (transform_x &&
-      length(transformed_vars) > 0) {
+  # ============================================================
+  # 5. CHECK POSITIVITY OF TRANSFORMED VARIABLES
+  # ============================================================
 
-    for (v in transformed_vars) {
+  if (transform_x) {
+
+    rhs_vars <- all.vars(
+      delete.response(
+        terms(formula)
+      )
+    )
+
+    for (v in rhs_vars) {
+
+      if (v %in% notrans)
+        next
 
       if (!v %in% names(mf))
         next
 
       xv <- mf[[v]]
 
-      if (!is.numeric(xv)) {
-
-        stop(
-          paste0(
-            "Variable '",
-            v,
-            "' must be numeric because it is transformed."
-          )
-        )
-      }
+      if (!is.numeric(xv))
+        next
 
       if (any(!is.finite(xv))) {
 
@@ -223,83 +210,30 @@ boxcox <- function(formula,
             "Variable '",
             v,
             "' contains values <= 0. ",
-            "It must be strictly positive because it is transformed."
+            "It must be strictly positive because ",
+            "it is transformed."
           )
         )
       }
     }
   }
 
-  # ============================================================
-  # 7. DESIGN MATRIX
-  # ============================================================
-
-  X <- model.matrix(
-    formula,
-    mf
-  )
-
-  if (noconstant &&
-      "(Intercept)" %in% colnames(X)) {
-
-    X <- X[
-      ,
-      colnames(X) != "(Intercept)",
-      drop = FALSE
-    ]
-  }
 
   # ============================================================
-  # 8. IDENTIFY RHS COLUMNS
-  # ============================================================
-
-  # Map each column of model.matrix() to its formula term.
-  assign_vector <- attr(
-    X,
-    "assign"
-  )
-
-  # Remove intercept from the transformation candidates
-  candidate_cols <- seq_len(
-    ncol(X)
-  )
-
-  if ("(Intercept)" %in% colnames(X)) {
-
-    candidate_cols <- candidate_cols[
-      colnames(X) != "(Intercept)"
-    ]
-  }
-
-  transform_cols <- rep(
-    FALSE,
-    ncol(X)
-  )
-
-  # ------------------------------------------------------------
-  # Simple-variable formulas
-  # ------------------------------------------------------------
-
-  for (v in transformed_vars) {
-
-    # Find exact RHS term
-    term_index <- which(
-      rhs_terms == v
-    )
-
-    if (length(term_index) == 1) {
-
-      transform_cols[
-        assign_vector == term_index
-      ] <- TRUE
-    }
-  }
-
-  # ============================================================
-  # 9. BOX-COX TRANSFORMATION
+  # 6. BOX-COX TRANSFORMATION
   # ============================================================
 
   bc <- function(x, lambda) {
+
+    if (any(!is.finite(x)) ||
+        any(x <= 0) ||
+        !is.finite(lambda)) {
+
+      return(rep(
+        NA_real_,
+        length(x)
+      ))
+    }
 
     lx <- log(x)
 
@@ -307,49 +241,31 @@ boxcox <- function(formula,
 
       return(lx)
 
-    }
+    } else {
 
-    expm1(
-      lambda * lx
-    ) / lambda
+      z <- lambda * lx
+
+      # Prevent numerical overflow
+      if (any(abs(z) > 700)) {
+
+        return(rep(
+          NA_real_,
+          length(x)
+        ))
+      }
+
+      return(
+        expm1(z) / lambda
+      )
+    }
   }
 
-  # ============================================================
-  # 10. RHS JACOBIAN
-  # ============================================================
-
-  rhs_log_jacobian <- function(lambda) {
-
-    if (!transform_x ||
-        length(transformed_vars) == 0) {
-
-      return(0)
-    }
-
-    total <- 0
-
-    for (v in transformed_vars) {
-
-      xv <- mf[[v]]
-
-      total <-
-        total +
-        (lambda - 1) *
-        sum(log(xv))
-    }
-
-    total
-  }
 
   # ============================================================
-  # 11. CONSTRUCT MODEL
+  # 7. CONSTRUCT MODEL
   # ============================================================
 
   construct_model <- function(par) {
-
-    # ----------------------------------------------------------
-    # LHS ONLY
-    # ----------------------------------------------------------
 
     if (model == "lhsonly") {
 
@@ -360,27 +276,20 @@ boxcox <- function(formula,
         theta
       )
 
-      W <- X
-
       return(
         list(
           y = yt,
-          X = W,
+          X = X,
           lambda = NA_real_,
           theta = theta
         )
       )
     }
 
-    # ----------------------------------------------------------
-    # RHS ONLY
-    # ----------------------------------------------------------
 
     if (model == "rhsonly") {
 
       lambda <- par[1]
-
-      yt <- y
 
       W <- X
 
@@ -388,27 +297,17 @@ boxcox <- function(formula,
 
         if (transform_cols[j]) {
 
-          # Original variable corresponding to this column
-          term_index <-
-            assign_vector[j]
-
-          term_name <-
-            rhs_terms[term_index]
-
-          if (term_name %in% transformed_vars) {
-
-            W[, j] <-
-              bc(
-                W[, j],
-                lambda
-              )
-          }
+          W[, j] <-
+            bc(
+              W[, j],
+              lambda
+            )
         }
       }
 
       return(
         list(
-          y = yt,
+          y = y,
           X = W,
           lambda = lambda,
           theta = NA_real_
@@ -416,9 +315,6 @@ boxcox <- function(formula,
       )
     }
 
-    # ----------------------------------------------------------
-    # SAME PARAMETER BOTH SIDES
-    # ----------------------------------------------------------
 
     if (model == "lambda") {
 
@@ -435,20 +331,11 @@ boxcox <- function(formula,
 
         if (transform_cols[j]) {
 
-          term_index <-
-            assign_vector[j]
-
-          term_name <-
-            rhs_terms[term_index]
-
-          if (term_name %in% transformed_vars) {
-
-            W[, j] <-
-              bc(
-                W[, j],
-                lambda
-              )
-          }
+          W[, j] <-
+            bc(
+              W[, j],
+              lambda
+            )
         }
       }
 
@@ -462,9 +349,6 @@ boxcox <- function(formula,
       )
     }
 
-    # ----------------------------------------------------------
-    # DIFFERENT PARAMETERS
-    # ----------------------------------------------------------
 
     if (model == "theta") {
 
@@ -482,20 +366,11 @@ boxcox <- function(formula,
 
         if (transform_cols[j]) {
 
-          term_index <-
-            assign_vector[j]
-
-          term_name <-
-            rhs_terms[term_index]
-
-          if (term_name %in% transformed_vars) {
-
-            W[, j] <-
-              bc(
-                W[, j],
-                lambda
-              )
-          }
+          W[, j] <-
+            bc(
+              W[, j],
+              lambda
+            )
         }
       }
 
@@ -510,21 +385,26 @@ boxcox <- function(formula,
     }
   }
 
+
   # ============================================================
-  # 12. CONCENTRATED LOG-LIKELIHOOD
+  # 8. LOG-LIKELIHOOD
   # ============================================================
 
   loglik <- function(par) {
 
-    mod <- construct_model(
-      par
-    )
+    mod <- construct_model(par)
+
+    if (any(!is.finite(mod$y)) ||
+        any(!is.finite(mod$X))) {
+
+      return(-Inf)
+    }
 
     fit <- tryCatch(
 
       lm.fit(
-        mod$X,
-        mod$y
+        x = mod$X,
+        y = mod$y
       ),
 
       error = function(e)
@@ -534,12 +414,13 @@ boxcox <- function(formula,
     if (is.null(fit))
       return(-Inf)
 
-    residuals <- fit$residuals
+    if (any(!is.finite(fit$residuals)))
+      return(-Inf)
 
     n <- length(y)
 
     SSR <- sum(
-      residuals^2
+      fit$residuals^2
     )
 
     if (!is.finite(SSR) ||
@@ -548,8 +429,7 @@ boxcox <- function(formula,
       return(-Inf)
     }
 
-    sigma2 <-
-      SSR / n
+    sigma2 <- SSR / n
 
     ll <-
       -0.5 *
@@ -560,92 +440,48 @@ boxcox <- function(formula,
           log(sigma2)
       )
 
-    # ----------------------------------------------------------
-    # LHS Jacobian
-    # ----------------------------------------------------------
 
+    # Jacobian
     if (model == "lhsonly") {
 
-      theta <- par[1]
-
       ll <-
         ll +
-        (theta - 1) *
+        (par[1] - 1) *
         sum(log(y))
     }
 
     if (model == "lambda") {
 
-      lambda <- par[1]
-
       ll <-
         ll +
-        (lambda - 1) *
+        (par[1] - 1) *
         sum(log(y))
     }
 
     if (model == "theta") {
 
-      theta <- par[2]
-
       ll <-
         ll +
-        (theta - 1) *
+        (par[2] - 1) *
         sum(log(y))
     }
 
-    # ----------------------------------------------------------
-    # RHS Jacobian
-    # ----------------------------------------------------------
-
-    if (model == "rhsonly") {
-
-      lambda <- par[1]
-
-      ll <-
-        ll +
-        rhs_log_jacobian(
-          lambda
-        )
-    }
-
-    if (model == "lambda") {
-
-      lambda <- par[1]
-
-      ll <-
-        ll +
-        rhs_log_jacobian(
-          lambda
-        )
-    }
-
-    if (model == "theta") {
-
-      lambda <- par[1]
-
-      ll <-
-        ll +
-        rhs_log_jacobian(
-          lambda
-        )
-    }
+    if (!is.finite(ll))
+      return(-Inf)
 
     ll
   }
 
+
   # ============================================================
-  # 13. COMPARISON MODEL
+  # 9. COMPARISON MODEL
   # ============================================================
 
   comparison_par <-
 
     if (model == "theta") {
 
-      c(
-        1,
-        1
-      )
+      c(1, 1)
 
     } else {
 
@@ -657,8 +493,16 @@ boxcox <- function(formula,
       comparison_par
     )
 
+  if (!is.finite(ll_comparison)) {
+
+    stop(
+      "Comparison model could not be estimated."
+    )
+  }
+
+
   # ============================================================
-  # 14. STARTING VALUES
+  # 10. STARTING VALUES
   # ============================================================
 
   if (model == "theta") {
@@ -666,14 +510,26 @@ boxcox <- function(formula,
     starts <- rbind(
 
       c(1, 1),
-      c(0, 0),
-      c(0.5, 0.5),
-      c(-1, -1),
-      c(1, 0),
-      c(0, 1),
-      c(0.5, 1),
-      c(1, 0.5)
 
+      c(0, 0),
+
+      c(0.5, 0.5),
+
+      c(-0.5, -0.5),
+
+      c(-1, -1),
+
+      c(1, 0),
+
+      c(0, 1),
+
+      c(0.5, 1),
+
+      c(1, 0.5),
+
+      c(-1, 0),
+
+      c(0, -1)
     )
 
   } else {
@@ -692,14 +548,16 @@ boxcox <- function(formula,
     )
   }
 
+
   # ============================================================
-  # 15. OPTIMIZATION
+  # 11. OPTIMIZATION
   # ============================================================
 
   if (trace) {
 
+    cat("\n")
     cat(
-      "\nFitting comparison model\n\n"
+      "Fitting comparison model\n\n"
     )
 
     cat(
@@ -713,32 +571,31 @@ boxcox <- function(formula,
       sep = ""
     )
 
+    cat("\n")
     cat(
-      "\nFitting full model\n\n"
+      "Fitting full model\n\n"
     )
   }
 
-  best <- NULL
 
+  best <- NULL
   best_value <- Inf
 
-  for (s in seq_len(
-    nrow(starts)
-  )) {
+
+  for (s in seq_len(nrow(starts))) {
 
     current_iter <- 0
 
     objective <- function(par) {
 
-      value <- -loglik(
-        par
-      )
+      value <- -loglik(par)
 
       current_iter <<-
         current_iter + 1
 
       if (trace &&
-          s == 1) {
+          s == 1 &&
+          is.finite(value)) {
 
         cat(
           "Iteration ",
@@ -757,13 +614,13 @@ boxcox <- function(formula,
       value
     }
 
+
     fit <- tryCatch(
 
       optim(
         par = starts[s, ],
         fn = objective,
-        method = "BFGS",
-        hessian = TRUE,
+        method = "Nelder-Mead",
         control = list(
           maxit = 5000,
           reltol = 1e-10
@@ -773,6 +630,7 @@ boxcox <- function(formula,
       error = function(e)
         NULL
     )
+
 
     if (!is.null(fit) &&
         is.finite(fit$value)) {
@@ -785,13 +643,12 @@ boxcox <- function(formula,
           fit$value
       }
     }
-
-    if (s == 1 &&
-        trace) {
-
-      cat("\n")
-    }
   }
+
+
+  # ============================================================
+  # 12. CHECK OPTIMIZATION
+  # ============================================================
 
   if (is.null(best)) {
 
@@ -800,14 +657,16 @@ boxcox <- function(formula,
     )
   }
 
-  # ============================================================
-  # 16. ESTIMATES
-  # ============================================================
 
   parhat <- best$par
 
   ll_full <-
     -best$value
+
+
+  # ============================================================
+  # 13. PARAMETER NAMES
+  # ============================================================
 
   if (model == "lhsonly") {
 
@@ -833,45 +692,38 @@ boxcox <- function(formula,
       )
   }
 
+
   # ============================================================
-  # 17. VARIANCE-COVARIANCE MATRIX
+  # 14. HESSIAN / STANDARD ERRORS
   # ============================================================
 
-  H <- best$hessian
+  H <- tryCatch(
 
-  V <- tryCatch(
-
-    solve(H),
+    optimHess(
+      parhat,
+      function(p)
+        -loglik(p)
+    ),
 
     error = function(e)
       NULL
   )
 
-  if (is.null(V)) {
 
-    H <- tryCatch(
+  V <- NULL
 
-      optimHess(
-        parhat,
-        function(p)
-          -loglik(p)
-      ),
+  if (!is.null(H) &&
+      all(is.finite(H))) {
+
+    V <- tryCatch(
+
+      solve(H),
 
       error = function(e)
         NULL
     )
-
-    if (!is.null(H)) {
-
-      V <- tryCatch(
-
-        solve(H),
-
-        error = function(e)
-          NULL
-      )
-    }
   }
+
 
   if (!is.null(V)) {
 
@@ -892,8 +744,9 @@ boxcox <- function(formula,
       )
   }
 
+
   # ============================================================
-  # 18. CONFIDENCE INTERVAL
+  # 15. CONFIDENCE INTERVAL
   # ============================================================
 
   alpha <-
@@ -927,6 +780,7 @@ boxcox <- function(formula,
     zcrit *
     se_transform
 
+
   transformation_table <-
     data.frame(
 
@@ -957,8 +811,9 @@ boxcox <- function(formula,
       check.names = FALSE
     )
 
+
   # ============================================================
-  # 19. SCALE-VARIANT PARAMETERS
+  # 16. SCALE-VARIANT PARAMETERS
   # ============================================================
 
   mod_full <-
@@ -975,11 +830,6 @@ boxcox <- function(formula,
   beta <-
     fit_full$coefficients
 
-  names(beta) <-
-    colnames(
-      mod_full$X
-    )
-
   sigma <-
     sqrt(
       sum(
@@ -988,66 +838,14 @@ boxcox <- function(formula,
         length(y)
     )
 
-  # ============================================================
-  # 20. CLASSIFY SCALE-VARIANT PARAMETERS
-  # ============================================================
+  names(beta) <-
+    colnames(
+      mod_full$X
+    )
 
-  beta_notrans <- character(0)
-
-  beta_trans <- character(0)
-
-  if ("(Intercept)" %in% names(beta)) {
-
-    beta_notrans <-
-      c(
-        beta_notrans,
-        "(Intercept)"
-      )
-  }
-
-  # Explicit notrans variables
-  if (length(notrans) > 0) {
-
-    for (v in notrans) {
-
-      idx <- which(
-        names(beta) == v
-      )
-
-      if (length(idx) == 1) {
-
-        beta_notrans <-
-          c(
-            beta_notrans,
-            v
-          )
-      }
-    }
-  }
-
-  # Transformed variables
-  if (transform_x &&
-      length(transformed_vars) > 0) {
-
-    for (v in transformed_vars) {
-
-      idx <- which(
-        names(beta) == v
-      )
-
-      if (length(idx) == 1) {
-
-        beta_trans <-
-          c(
-            beta_trans,
-            v
-          )
-      }
-    }
-  }
 
   # ============================================================
-  # 21. LR TESTS OF TRANSFORMATION PARAMETERS
+  # 17. LR TESTS
   # ============================================================
 
   restricted_values <-
@@ -1055,39 +853,25 @@ boxcox <- function(formula,
     if (model == "theta") {
 
       list(
-
-        "-1" =
-          c(-1, -1),
-
-        "0" =
-          c(0, 0),
-
-        "1" =
-          c(1, 1)
-
+        "-1" = c(-1, -1),
+        "0" = c(0, 0),
+        "1" = c(1, 1)
       )
 
     } else {
 
       list(
-
-        "-1" =
-          -1,
-
-        "0" =
-          0,
-
-        "1" =
-          1
-
+        "-1" = -1,
+        "0" = 0,
+        "1" = 1
       )
     }
 
+
   LR_tests <- list()
 
-  for (nm in names(
-    restricted_values
-  )) {
+
+  for (nm in names(restricted_values)) {
 
     ll0 <-
       loglik(
@@ -1131,18 +915,18 @@ boxcox <- function(formula,
       )
   }
 
+
   LR_table <-
     do.call(
       rbind,
       LR_tests
     )
 
+
   test_parameter <-
 
-    if (model %in% c(
-      "lhsonly",
-      "theta"
-    )) {
+    if (model == "lhsonly" ||
+        model == "theta") {
 
       "theta"
 
@@ -1151,6 +935,7 @@ boxcox <- function(formula,
       "lambda"
     }
 
+
   rownames(LR_table) <-
     paste0(
       test_parameter,
@@ -1158,8 +943,9 @@ boxcox <- function(formula,
       names(restricted_values)
     )
 
+
   # ============================================================
-  # 22. MODEL LR TEST
+  # 18. MODEL LR TEST
   # ============================================================
 
   LR_model <-
@@ -1172,12 +958,8 @@ boxcox <- function(formula,
         )
     )
 
-  # Stata's displayed LR chi2 degrees of freedom
-  # correspond to the number of RHS model terms.
   df_model <-
-    length(
-      rhs_terms
-    )
+    length(parhat)
 
   p_model <-
     pchisq(
@@ -1186,8 +968,9 @@ boxcox <- function(formula,
       lower.tail = FALSE
     )
 
+
   # ============================================================
-  # 23. FORMATTING
+  # 19. FORMATTING
   # ============================================================
 
   fmt <- function(x) {
@@ -1206,20 +989,19 @@ boxcox <- function(formula,
     )
   }
 
+
   fmt_p <- function(x) {
 
     ifelse(
-
       x < 0.001,
-
       "0.000",
-
       fmt(x)
     )
   }
 
+
   # ============================================================
-  # 24. HEADER
+  # 20. HEADER
   # ============================================================
 
   cat(
@@ -1256,8 +1038,9 @@ boxcox <- function(formula,
     sep = ""
   )
 
+
   # ============================================================
-  # 25. TRANSFORMATION TABLE
+  # 21. TRANSFORMATION TABLE
   # ============================================================
 
   cat(
@@ -1265,23 +1048,28 @@ boxcox <- function(formula,
   )
 
   dep_name <-
-    deparse(
-      formula[[2]]
-    )
+    all.vars(formula)[1]
 
   cat(
     sprintf(
       "%12s | %12s %12s %8s %8s %12s %12s\n",
+
       dep_name,
+
       "Coefficient",
+
       "Std. err.",
+
       "z",
+
       "P>|z|",
+
       paste0(
         "[",
         level,
         "% conf. interval"
       ),
+
       ""
     )
   )
@@ -1289,6 +1077,7 @@ boxcox <- function(formula,
   cat(
     "-------------+----------------------------------------------------------------\n"
   )
+
 
   for (i in seq_len(
     nrow(
@@ -1298,6 +1087,7 @@ boxcox <- function(formula,
 
     cat(
       sprintf(
+
         "%12s | %12s %12s %8s %8s %12s %12s\n",
 
         rownames(
@@ -1331,12 +1121,14 @@ boxcox <- function(formula,
     )
   }
 
+
   cat(
     "------------------------------------------------------------------------------\n\n"
   )
 
+
   # ============================================================
-  # 26. SCALE-VARIANT PARAMETERS
+  # 22. SCALE-VARIANT PARAMETERS
   # ============================================================
 
   cat(
@@ -1355,64 +1147,35 @@ boxcox <- function(formula,
     "-------------+--------------\n"
   )
 
-  # ------------------------------------------------------------
-  # NOTRANS
-  # ------------------------------------------------------------
 
-  cat(
-    "Notrans      |\n"
-  )
+  if (length(notrans) > 0) {
 
-  if (length(beta_notrans) > 0) {
+    cat(
+      "Notrans      |\n"
+    )
 
-    for (nm in beta_notrans) {
+  } else {
 
-      display_name <-
-        ifelse(
-          nm == "(Intercept)",
-          "_cons",
-          nm
-        )
+    cat(
+      "Notrans      |\n"
+    )
+  }
+
+
+  if (length(beta) > 0) {
+
+    for (i in seq_along(beta)) {
 
       cat(
         sprintf(
           "%12s | %12s\n",
-          display_name,
-          fmt(
-            beta[nm]
-          )
+          names(beta)[i],
+          fmt(beta[i])
         )
       )
     }
   }
 
-  # ------------------------------------------------------------
-  # TRANS
-  # ------------------------------------------------------------
-
-  if (length(beta_trans) > 0) {
-
-    cat(
-      "-------------+--------------\n"
-    )
-
-    cat(
-      "Trans        |\n"
-    )
-
-    for (nm in beta_trans) {
-
-      cat(
-        sprintf(
-          "%12s | %12s\n",
-          nm,
-          fmt(
-            beta[nm]
-          )
-        )
-      )
-    }
-  }
 
   cat(
     "-------------+--------------\n"
@@ -1430,8 +1193,9 @@ boxcox <- function(formula,
     "----------------------------\n\n"
   )
 
+
   # ============================================================
-  # 27. LR TEST TABLE
+  # 23. LR TESTS
   # ============================================================
 
   cat(
@@ -1450,12 +1214,14 @@ boxcox <- function(formula,
     "---------------------------------------------------------\n"
   )
 
+
   for (i in seq_len(
     nrow(LR_table)
   )) {
 
     cat(
       sprintf(
+
         "%12s %16s %12s %15s\n",
 
         rownames(
@@ -1486,12 +1252,14 @@ boxcox <- function(formula,
     )
   }
 
+
   cat(
     "---------------------------------------------------------\n"
   )
 
+
   # ============================================================
-  # 28. RETURN OBJECT
+  # 24. RETURN OBJECT
   # ============================================================
 
   result <- list(
@@ -1542,15 +1310,7 @@ boxcox <- function(formula,
       best$convergence,
 
     iterations =
-      best$counts[
-        "function"
-      ],
-
-    transformed_vars =
-      transformed_vars,
-
-    notrans =
-      notrans
+      best$counts
   )
 
   class(result) <-
