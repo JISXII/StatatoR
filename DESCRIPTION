@@ -7,4 +7,5 @@ Authors@R: person("Javier", "TuApellido",
                   role = c("aut", "cre"))
 Description: Tools for econometric analysis and replication of Stata procedures.
 License: MIT
+Imports: stats
 Encoding: UTF-8
