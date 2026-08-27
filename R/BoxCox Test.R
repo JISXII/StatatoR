@@ -1,17 +1,22 @@
 #' Box-Cox Regression (replica robusta de `boxcox` de Stata)
 #'
 #' Estima modelos de regresion Box-Cox por maxima verosimilitud, replicando
-#' exactamente las formulas de Stata (ver [R] boxcox, "Methods and formulas").
+#' las formulas y el comportamiento de Stata (ver [R] boxcox, "Methods and
+#' formulas"), incluyendo el manejo de colinealidad estatica que Stata
+#' reporta como "note: <var> omitted because of collinearity."
 #'
-#' @param formula Formula del modelo. Las variables del RHS que quieras
-#'   transformar Y las que quieras dejar sin transformar (notrans) deben
-#'   estar TODAS incluidas aca (a diferencia de Stata, donde notrans() agrega
-#'   variables aunque no esten en indepvars).
+#' @param formula Formula del modelo. Las variables que quieras transformar
+#'   Y las que quieras dejar en notrans deben estar TODAS incluidas aca
+#'   (a diferencia de Stata, donde notrans() puede agregar variables aunque
+#'   no esten en indepvars).
 #' @param data Data frame con las variables.
-#' @param model Especificacion del modelo Box-Cox: "lhsonly", "rhsonly",
-#'   "lambda" o "theta".
-#' @param notrans Nombres de variables (tal como aparecen en `formula`, no en
-#'   `colnames(model.matrix(...))`) que no deben transformarse.
+#' @param model "lhsonly", "rhsonly", "lambda" o "theta".
+#' @param notrans Nombres de variables (tal como aparecen en `formula`) que
+#'   no deben transformarse. Si alguna resulta colineal con el resto del
+#'   bloque no-transformado (intercepto + otras notrans), se reclasifica
+#'   automaticamente como transformada -igual que hace Stata- y se avisa
+#'   por consola. Solo aplica a variables numericas continuas; si la
+#'   colineal es un factor o el intercepto, se detiene con un error.
 #' @param level Nivel de confianza.
 #' @param digits Numero de decimales para imprimir.
 #' @param noconstant Si TRUE, omite el intercepto.
@@ -81,11 +86,9 @@ boxcox <- function(formula,
 
   X <- model.matrix(formula, mf)
 
-  # Guardamos el mapeo columna -> termino ANTES de tocar nada.
-  # attr(X, "assign")[j] == 0  -> columna j es el intercepto
-  # attr(X, "assign")[j] == k  -> columna j viene de term.labels(formula)[k]
-  term_labels  <- attr(terms(formula), "term.labels")
-  assign_vec   <- attr(X, "assign")
+  # Mapeo exacto columna -> termino del formula (0 = intercepto).
+  term_labels <- attr(terms(formula), "term.labels")
+  assign_vec  <- attr(X, "assign")
 
   if (noconstant && "(Intercept)" %in% colnames(X)) {
     keep       <- colnames(X) != "(Intercept)"
@@ -94,7 +97,7 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 4. NOTRANS
+  # 4. NOTRANS: validacion de nombres
   # ============================================================
 
   if (is.null(notrans)) {
@@ -114,20 +117,124 @@ boxcox <- function(formula,
     )
   }
 
+  transform_x <- model %in% c("rhsonly", "lambda", "theta")
+
   # ============================================================
-  # 5. IDENTIFY TRANSFORMED RHS VARIABLES
-  #    (mapeo EXACTO via attr(X,"assign"), no coincidencia de texto)
+  # 5. CHEQUEO ESTATICO DE COLINEALIDAD DEL BLOQUE NO TRANSFORMADO
+  #    (equivalente al "note: x1 omitted because of collinearity."
+  #    de Stata)
+  #
+  #    El bloque [intercepto + variables en notrans] nunca cambia
+  #    durante la optimizacion (a diferencia de las columnas que se
+  #    transforman con lambda/theta). Si ese bloque es de rango
+  #    deficiente, el modelo no es identificable pase lo que pase con
+  #    lambda/theta. Stata resuelve esto sacando la variable ofensora
+  #    de notrans y dejando que SI se transforme - eso es justamente
+  #    lo que reclasificamos aca.
   # ============================================================
 
-  transform_x <- model %in% c("rhsonly", "lambda", "theta")
+  notrans_effective <- notrans
+
+  if (transform_x && length(notrans_effective) > 0) {
+
+    repeat {
+
+      static_cols <- vapply(
+        seq_len(ncol(X)),
+        function(j) {
+          a <- assign_vec[j]
+          if (a == 0) return(TRUE)
+          term_labels[a] %in% notrans_effective
+        },
+        logical(1)
+      )
+
+      static_idx <- which(static_cols)
+      Z <- X[, static_idx, drop = FALSE]
+
+      qrZ   <- qr(Z)
+      rankZ <- qrZ$rank
+
+      if (rankZ >= ncol(Z)) break   # sin colinealidad, listo
+
+      redundant_local <- qrZ$pivot[(rankZ + 1):ncol(Z)]
+      redundant_cols  <- static_idx[redundant_local]
+
+      moved_any <- FALSE
+
+      for (col in redundant_cols) {
+
+        if (assign_vec[col] == 0) {
+          stop(
+            "The intercept is collinear with the untransformed block. ",
+            "This model is not identifiable as specified; check your data."
+          )
+        }
+
+        term_nm <- term_labels[assign_vec[col]]
+
+        if (!(term_nm %in% notrans_effective)) next  # ya fue reclasificado antes
+
+        # Solo se puede "salvar" reclasificando si el termino es numerico
+        # continuo (no factor) y estrictamente positivo, porque va a
+        # requerir Box-Cox.
+        raw_var <- if (term_nm %in% names(mf)) mf[[term_nm]] else NULL
+
+        if (is.null(raw_var) || !is.numeric(raw_var) || is.factor(raw_var)) {
+          stop(
+            "Variable '", term_nm, "' is collinear with the rest of the ",
+            "untransformed block, and Stata would normally drop it from ",
+            "notrans() and transform it instead. That fallback only works ",
+            "for continuous numeric variables here (this one is categorical ",
+            "or non-numeric), so please resolve the collinearity manually ",
+            "(e.g. remove the variable or the redundant one)."
+          )
+        }
+
+        if (any(raw_var <= 0)) {
+          stop(
+            "Variable '", term_nm, "' is collinear with the rest of the ",
+            "untransformed block. Stata would drop it from notrans() and ",
+            "transform it instead, but it contains values <= 0 so it ",
+            "cannot receive a Box-Cox transform. Resolve the collinearity ",
+            "manually."
+          )
+        }
+
+        cat(
+          "note: ", term_nm,
+          " is collinear with the untransformed block; ",
+          "reclassifying it from notrans to transformed (as Stata does).\n",
+          sep = ""
+        )
+
+        notrans_effective <- setdiff(notrans_effective, term_nm)
+        moved_any <- TRUE
+      }
+
+      if (!moved_any) {
+        stop(
+          "The untransformed block (intercept + notrans variables) is ",
+          "rank-deficient and the collinearity could not be resolved ",
+          "automatically. Check your data for exact linear dependencies."
+        )
+      }
+    }
+  }
+
+  # ============================================================
+  # 6. IDENTIFY TRANSFORMED RHS VARIABLES (definitivo, tras el
+  #    chequeo de colinealidad)
+  # ============================================================
 
   if (transform_x) {
 
     transform_cols <- vapply(
-      assign_vec,
-      function(a) {
-        if (a == 0) return(FALSE)                 # intercepto: nunca
-        !(term_labels[a] %in% notrans)             # transformar si NO esta en notrans
+      seq_len(ncol(X)),
+      function(j) {
+        a <- assign_vec[j]
+        if (a == 0) return(FALSE)
+        !(term_labels[a] %in% notrans_effective)
       },
       logical(1)
     )
@@ -138,7 +245,7 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 6. CHECK POSITIVITY OF RHS
+  # 7. CHECK POSITIVITY OF TRANSFORMED RHS VARIABLES
   # ============================================================
 
   if (transform_x && any(transform_cols)) {
@@ -147,7 +254,7 @@ boxcox <- function(formula,
 
     for (v in rhs_vars) {
 
-      if (v %in% notrans) next
+      if (v %in% notrans_effective) next
       if (!v %in% names(mf)) next
 
       xv <- mf[[v]]
@@ -164,7 +271,7 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 7. BOX-COX TRANSFORMATION (mismo umbral que Stata: 1e-10)
+  # 8. BOX-COX TRANSFORMATION (mismo umbral que Stata: 1e-10)
   # ============================================================
 
   BC_EPS <- 1e-10
@@ -179,7 +286,7 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 8. CONSTRUCT MODEL
+  # 9. CONSTRUCT MODEL
   # ============================================================
 
   construct_model <- function(par) {
@@ -235,12 +342,21 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 9. CONCENTRATED LOG-LIKELIHOOD
-  #    (identica a la de Stata: [R] boxcox, Methods and formulas)
+  # 10. CONCENTRATED LOG-LIKELIHOOD
+  #     (identica a la de Stata: [R] boxcox, Methods and formulas)
+  #
+  #     IMPORTANTE: NO se penaliza con -Inf la deficiencia de rango.
+  #     lm.fit() maneja columnas colineales via QR con pivoteo: los
+  #     valores ajustados (y por lo tanto el SSR y la verosimilitud)
+  #     siguen siendo correctos aunque coeficientes individuales no
+  #     esten identificados. Forzar -Inf ahi (como se hacia antes)
+  #     introduce un acantilado discontinuo en la superficie que
+  #     rompe el gradiente numerico de BFGS - eso era exactamente lo
+  #     que generaba las oscilaciones y el "-Inf" espurio del log.
   # ============================================================
 
   n <- length(y)
-  sum_log_y <- sum(log(y))   # se recalcula una sola vez
+  sum_log_y <- sum(log(y))
 
   loglik <- function(par) {
 
@@ -252,11 +368,6 @@ boxcox <- function(formula,
     )
 
     if (is.null(fit)) return(-Inf)
-
-    # Salvaguarda: si el diseño quedo colineal/deficiente en rango para
-    # este valor de lambda/theta, la verosimilitud NO es comparable con
-    # la de un ajuste de rango completo -> descartamos ese punto.
-    if (fit$qr$rank < ncol(mod$X)) return(-Inf)
 
     residuals <- fit$residuals
     SSR <- sum(residuals^2)
@@ -276,22 +387,19 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 10. COMPARISON MODEL (lambda = theta = 1)
+  # 11. COMPARISON MODEL (lambda = theta = 1)
   # ============================================================
 
   comparison_par <- if (model == "theta") c(1, 1) else 1
   ll_comparison  <- loglik(comparison_par)
 
   # ============================================================
-  # 11. STARTING VALUES
-  #     Igual que Stata: arranca en 1. Ademas, para mayor robustez
-  #     (superficies planas/tipo cresta, sobre todo en "theta"),
-  #     probamos una grilla adicional y nos quedamos con el mejor.
+  # 12. STARTING VALUES (arranque de Stata primero: 1)
   # ============================================================
 
   if (model == "theta") {
     starts <- rbind(
-      c(1, 1),      # arranque de Stata
+      c(1, 1),
       c(0, 0),
       c(0.5, 0.5),
       c(-1, -1),
@@ -302,16 +410,14 @@ boxcox <- function(formula,
     )
   } else {
     starts <- matrix(
-      c(1, -2, -1, -0.5, 0, 0.5, 2),   # 1 primero: arranque de Stata
+      c(1, -2, -1, -0.5, 0, 0.5, 2),
       ncol = 1
     )
   }
 
   # ============================================================
-  # 12. OPTIMIZACION
-  #     BFGS (grilla de arranques) + refinamiento final con Nelder-Mead
-  #     y tolerancias estrictas, para converger al mismo optimo que
-  #     el Newton-Raphson de Stata.
+  # 13. OPTIMIZACION: BFGS (grilla de arranques) + refinamiento
+  #     final con Nelder-Mead y tolerancias estrictas.
   # ============================================================
 
   if (trace) {
@@ -354,9 +460,6 @@ boxcox <- function(formula,
 
     if (is.null(fit1) || !is.finite(fit1$value)) return(NULL)
 
-    # Refinamiento: Nelder-Mead no usa gradiente numerico y suele
-    # limar los ultimos decimales que BFGS deja sueltos en superficies
-    # chatas (muy comun en el modelo "theta").
     fit2 <- tryCatch(
       optim(
         par = fit1$par, fn = objective, method = "Nelder-Mead",
@@ -369,9 +472,6 @@ boxcox <- function(formula,
       fit1 <- fit2
     }
 
-    # Hessiano final siempre por diferencias finitas de alta precision,
-    # independiente del metodo que gano (mas estable que hessian=TRUE
-    # de optim con BFGS cuando el refinamiento fue Nelder-Mead).
     fit1
   }
 
@@ -395,7 +495,7 @@ boxcox <- function(formula,
   ll_full <- -best$value
 
   # ============================================================
-  # 13. PARAMETER NAMES
+  # 14. PARAMETER NAMES
   # ============================================================
 
   if (model == "lhsonly") {
@@ -409,9 +509,7 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 14. VARIANCE-COVARIANCE MATRIX
-  #     Hessiano numerico de alta precision (optimHess), consistente
-  #     sin importar que optimizador gano el refinamiento.
+  # 15. VARIANCE-COVARIANCE MATRIX
   # ============================================================
 
   H <- tryCatch(
@@ -429,7 +527,7 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 15. CONFIDENCE INTERVAL
+  # 16. CONFIDENCE INTERVAL
   # ============================================================
 
   alpha <- 1 - (level / 100)
@@ -453,7 +551,7 @@ boxcox <- function(formula,
   )
 
   # ============================================================
-  # 16. SCALE-VARIANT PARAMETERS
+  # 17. SCALE-VARIANT PARAMETERS
   # ============================================================
 
   mod_full <- construct_model(parhat)
@@ -461,9 +559,10 @@ boxcox <- function(formula,
 
   if (fit_full$qr$rank < ncol(mod_full$X)) {
     warning(
-      "The design matrix is rank-deficient at the optimum ",
-      "(collinearity after Box-Cox transformation). Coefficients ",
-      "for the aliased columns are NA."
+      "The design matrix is rank-deficient at the optimum. Coefficients ",
+      "for the aliased columns are NA. This can happen at pathological ",
+      "lambda/theta values even after the static collinearity fix; the ",
+      "fitted values and log-likelihood remain valid."
     )
   }
 
@@ -473,7 +572,7 @@ boxcox <- function(formula,
   names(beta) <- colnames(mod_full$X)
 
   # ============================================================
-  # 17. LR TESTS
+  # 18. LR TESTS
   # ============================================================
 
   restricted_values <- if (model == "theta") {
@@ -506,7 +605,7 @@ boxcox <- function(formula,
   rownames(LR_table) <- paste0(test_parameter, " = ", names(restricted_values))
 
   # ============================================================
-  # 18. MODEL LR TEST
+  # 19. MODEL LR TEST
   # ============================================================
 
   LR_model <- max(0, 2 * (ll_full - ll_comparison))
@@ -514,7 +613,7 @@ boxcox <- function(formula,
   p_model  <- pchisq(LR_model, df = df_model, lower.tail = FALSE)
 
   # ============================================================
-  # 19. FORMATTING
+  # 20. FORMATTING
   # ============================================================
 
   fmt <- function(x) {
@@ -526,14 +625,14 @@ boxcox <- function(formula,
   }
 
   # ============================================================
-  # 20. HEADER
+  # 21. HEADER
   # ============================================================
 
   cat("Number of obs   = ", nrow(mf), "\n", sep = "")
   cat("Log likelihood = ", fmt(ll_full), "\n", sep = "")
 
   # ============================================================
-  # 21. TRANSFORMATION TABLE
+  # 22. TRANSFORMATION TABLE
   # ============================================================
 
   cat("------------------------------------------------------------------------------\n")
@@ -569,17 +668,31 @@ boxcox <- function(formula,
   cat("------------------------------------------------------------------------------\n\n")
 
   # ============================================================
-  # 22. SCALE-VARIANT PARAMETERS
+  # 23. SCALE-VARIANT PARAMETERS
+  #     (separado en Notrans / Trans como hace Stata de verdad; la
+  #     version anterior mostraba todo bajo "Notrans" siempre, lo
+  #     cual deja de tener sentido apenas hay columnas Trans)
   # ============================================================
 
   cat("Estimates of scale-variant parameters\n")
   cat("----------------------------\n")
   cat("             | Coefficient\n")
   cat("-------------+--------------\n")
-  cat("Notrans      |\n")
 
-  if (length(beta) > 0) {
-    for (i in seq_along(beta)) {
+  is_notrans_col <- !transform_cols   # incluye intercepto
+  is_trans_col   <- transform_cols
+
+  if (any(is_notrans_col)) {
+    cat("Notrans      |\n")
+    for (i in which(is_notrans_col)) {
+      cat(sprintf("%12s | %12s\n", names(beta)[i], fmt(beta[i])))
+    }
+  }
+
+  if (any(is_trans_col)) {
+    if (any(is_notrans_col)) cat("-------------+--------------\n")
+    cat("Trans        |\n")
+    for (i in which(is_trans_col)) {
       cat(sprintf("%12s | %12s\n", names(beta)[i], fmt(beta[i])))
     }
   }
@@ -589,7 +702,7 @@ boxcox <- function(formula,
   cat("----------------------------\n\n")
 
   # ============================================================
-  # 23. LR TESTS
+  # 24. LR TESTS
   # ============================================================
 
   cat("---------------------------------------------------------\n")
@@ -612,7 +725,7 @@ boxcox <- function(formula,
   cat("---------------------------------------------------------\n")
 
   # ============================================================
-  # 24. RETURN OBJECT
+  # 25. RETURN OBJECT
   # ============================================================
 
   result <- list(
@@ -631,6 +744,8 @@ boxcox <- function(formula,
     vcov = V,
     hessian = H,
     convergence = best$convergence,
+    notrans_effective = notrans_effective,
+    transform_cols = transform_cols,
     rank_full = fit_full$qr$rank,
     ncol_full = ncol(mod_full$X)
   )
