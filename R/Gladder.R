@@ -3,29 +3,25 @@
 #' @description
 #' Displays a 3x3 grid of histograms for the 9 Tukey ladder of powers transformations,
 #' overlaid with a normal density curve. Allows customizing bar colors, line colors,
-#' and automatically labels the outer global axes ("Density" and variable name).
+#' and scaling all font sizes proportionally for presentations or reports.
 #'
 #' @param x A numeric vector to be transformed and plotted.
 #' @param bins Integer. Suggested number of bins for the histograms. Default is 15.
-#' @param col_bars Character. Color for the histogram bars. Default is "#b3cde3" (light blue).
-#' @param col_line Character. Color for the overlaid normal curve. Default is "#e41a1c" (red).
+#' @param col_bars Character. Color for the histogram bars. Default is "#b3cde3".
+#' @param col_line Character. Color for the overlaid normal curve. Default is "#e41a1c".
+#' @param cex_base Numeric. Multiplier for all text sizes (titles, axes, labels). Default is 1.
 #'
 #' @return A 3x3 base R plot is displayed. No object is returned.
 #' @export
-gladder <- function(x, bins = 15, col_bars = "#b3cde3", col_line = "#e41a1c") {
+gladder <- function(x, bins = 15, col_bars = "#b3cde3", col_line = "#e41a1c", cex_base = 1) {
   
   if (!is.numeric(x)) stop("'x' must be a numeric vector.")
-  
-  # Capturamos el nombre real de la variable desde el entorno de llamada para usarlo en el eje X
   var_name <- deparse(substitute(x))
-  
   x <- na.omit(x)
   
-  # Save original par settings to restore on exit
   oldpar <- par(no.readonly = TRUE)
   on.exit(par(oldpar))
   
-  # Set up a 3x3 Stata-style plotting grid with outer margins (oma) for global labels
   par(mfrow = c(3, 3), mar = c(3, 3, 2, 1), oma = c(4, 4, 3, 1))
   
   trans_names <- c("cubic", "square", "identity", "square root", "log", 
@@ -49,23 +45,24 @@ gladder <- function(x, bins = 15, col_bars = "#b3cde3", col_line = "#e41a1c") {
     
     if (length(xt) < 2 || var(xt) == 0) {
       plot.new()
-      title(main = trans_names[i], sub = trans_forms[i], col.main = "darkgray", cex.main = 0.9)
-      text(0.5, 0.5, "Invalid Data\n(NAs produced)", col = "red", cex = 0.8)
+      title(main = trans_names[i], sub = trans_forms[i], col.main = "darkgray", 
+            cex.main = 1 * cex_base, cex.sub = 0.9 * cex_base)
+      text(0.5, 0.5, "Invalid Data\n(NAs produced)", col = "red", cex = 0.8 * cex_base)
       next
     }
     
-    # Draw histogram without internal axis labels to keep it clean like Stata
+    # Dibujar histograma escalando el título interno y los números de los ejes
     hist(xt, breaks = bins, prob = TRUE, col = col_bars, border = "white",
-         main = trans_names[i], xlab = "", ylab = "", cex.main = 0.9)
+         main = trans_names[i], xlab = "", ylab = "", 
+         cex.main = 1 * cex_base, cex.axis = 0.85 * cex_base)
     
-    # Overlay theoretical normal density curve
     x_seq <- seq(min(xt), max(xt), length.out = 100)
     y_seq <- dnorm(x_seq, mean = mean(xt), sd = sd(xt))
     lines(x_seq, y_seq, col = col_line, lwd = 2)
   }
   
-  # Añadir etiquetas globales por fuera de la grilla 3x3
-  mtext("Histograms by transformation", outer = TRUE, line = 1, cex = 1.2, font = 2)
-  mtext("Density", side = 2, outer = TRUE, line = 2.2, cex = 1.1)
-  mtext(var_name, side = 1, outer = TRUE, line = 2.2, cex = 1.1)
+  # Añadir etiquetas globales por fuera de la grilla 3x3 escaladas por cex_base
+  mtext("Histograms by transformation", outer = TRUE, line = 1, cex = 1.2 * cex_base, font = 2)
+  mtext("Density", side = 2, outer = TRUE, line = 2.2, cex = 1.1 * cex_base)
+  mtext(var_name, side = 1, outer = TRUE, line = 2.2, cex = 1.1 * cex_base)
 }
