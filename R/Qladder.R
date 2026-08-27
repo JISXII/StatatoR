@@ -165,8 +165,9 @@ qladder <- function(
 
       main = nm,
 
+      # Solid dark-blue points
       pch = 16,
-
+      col = "darkblue",
       cex = cex,
 
       cex.axis = cex.axis,
@@ -180,8 +181,10 @@ qladder <- function(
       ylab = "Sample quantiles"
     )
 
+    # 45-degree reference line
     qqline(
       z,
+      col = "red",
       lwd = 2
     )
   }
