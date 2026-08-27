@@ -1,0 +1,269 @@
+# ================================================================
+# boxcoxtest(): replica en R del comando `boxcox` de Stata
+# (basado en el manual [R] boxcox -- ver "Methods and formulas")
+# ================================================================
+
+.bc_transform <- function(x, lam) {
+  if (abs(lam) > 1e-10) (x^lam - 1) / lam else log(x)
+}
+
+# log-verosimilitud concentrada para un vector de parametros de
+# transformacion dado (0, 1 o 2 parametros libres segun el modelo).
+# Devuelve tambien d_hat (coef.), sigma2_hat y el diseno W.
+.cll <- function(y, Xtrans, Z, model, lambda, theta, noconstant, sum_ln_y) {
+  N <- length(y)
+  has_x <- !is.null(Xtrans) && ncol(Xtrans) > 0
+
+  if (model %in% c("theta", "lhsonly")) {
+    y_t <- .bc_transform(y, theta); jac <- (theta - 1) * sum_ln_y
+  } else if (model == "lambda") {
+    y_t <- .bc_transform(y, lambda); jac <- (lambda - 1) * sum_ln_y
+  } else { # rhsonly
+    y_t <- y; jac <- 0
+  }
+
+  if (model %in% c("theta", "lambda", "rhsonly") && has_x) {
+    Xt <- apply(Xtrans, 2, .bc_transform, lam = lambda)
+  } else Xt <- NULL
+
+  W <- cbind(Xt, Z)
+  if (!noconstant) W <- cbind(`_cons` = rep(1, N), W)  # rep(,N) evita el
+  # reciclaje erroneo de cbind() cuando Xt y Z son ambos NULL (modelo solo-constante)
+
+  fit <- .lm.fit(W, y_t)
+  SSR <- sum(fit$residuals^2)
+  sigma2 <- SSR / N
+  ll <- (-N / 2) * (log(2 * pi) + 1 + log(sigma2)) + jac
+
+  list(ll = ll, sigma2 = sigma2, coef = setNames(fit$coefficients, colnames(W)),
+       W = W, N = N, resid = fit$residuals)
+}
+
+# Ajusta el modelo (0/1/2 parametros libres de transformacion, segun
+# corresponda) maximizando la verosimilitud concentrada.
+.fit_one <- function(y, Xtrans, Z, model, noconstant, start, sum_ln_y) {
+  has_x <- !is.null(Xtrans) && ncol(Xtrans) > 0
+
+  free <- switch(model,
+    theta   = if (has_x) c("lambda", "theta") else "theta",
+    lambda  = "lambda",
+    lhsonly = "theta",
+    rhsonly = if (has_x) "lambda" else character(0)
+  )
+
+  objective <- function(par) {
+    lam <- if ("lambda" %in% free) par[which(free == "lambda")] else 1
+    th  <- if ("theta"  %in% free) par[which(free == "theta")]  else 1
+    out <- tryCatch(.cll(y, Xtrans, Z, model, lam, th, noconstant, sum_ln_y)$ll,
+                     error = function(e) NA)
+    if (is.na(out) || !is.finite(out)) return(1e10)
+    -out
+  }
+
+  if (length(free) == 0) {
+    # rhsonly sin variables a transformar: no hay parametro libre
+    res <- .cll(y, Xtrans, Z, model, lambda = 1, theta = 1, noconstant, sum_ln_y)
+    return(list(ll = res$ll, sigma2 = res$sigma2, coef = res$coef, W = res$W,
+                par = numeric(0), free = free, hessian = matrix(numeric(0), 0, 0),
+                N = res$N, resid = res$resid))
+  }
+
+  st <- if (!is.null(start)) start[free] else setNames(rep(1, length(free)), free)
+
+  if (length(free) == 1) {
+    o <- optimize(function(p) objective(setNames(p, free)), interval = c(-5, 5),
+                  tol = 1e-8)
+    par <- setNames(o$minimum, free)
+  } else {
+    o <- optim(st, objective, method = "Nelder-Mead",
+               control = list(reltol = 1e-12, maxit = 2000))
+    par <- setNames(o$par, free)
+  }
+
+  res <- .cll(y, Xtrans, Z, model,
+              lambda = if ("lambda" %in% free) par["lambda"] else 1,
+              theta  = if ("theta"  %in% free) par["theta"]  else 1,
+              noconstant, sum_ln_y)
+
+  # hessiano numerico (diferencias centrales) de la MENOS log-verosimilitud
+  # concentrada, solo en (lambda, theta) -> SE tipo Wald para esos parametros
+  H <- .num_hessian(objective, par, eps = 1e-4)
+
+  list(ll = res$ll, sigma2 = res$sigma2, coef = res$coef, W = res$W,
+       par = par, free = free, hessian = H, N = res$N, resid = res$resid)
+}
+
+.num_hessian <- function(f, x, eps = 1e-4) {
+  n <- length(x); H <- matrix(0, n, n); fx <- f(x)
+  for (i in seq_len(n)) for (j in i:n) {
+    if (i == j) {
+      xp <- x; xp[i] <- xp[i] + eps
+      xm <- x; xm[i] <- xm[i] - eps
+      H[i, i] <- (f(xp) - 2 * fx + f(xm)) / eps^2
+    } else {
+      pp <- x; pp[i] <- pp[i] + eps; pp[j] <- pp[j] + eps
+      pm <- x; pm[i] <- pm[i] + eps; pm[j] <- pm[j] - eps
+      mp <- x; mp[i] <- mp[i] - eps; mp[j] <- mp[j] + eps
+      mm <- x; mm[i] <- mm[i] - eps; mm[j] <- mm[j] - eps
+      H[i, j] <- H[j, i] <- (f(pp) - f(pm) - f(mp) + f(mm)) / (4 * eps^2)
+    }
+  }
+  dimnames(H) <- list(names(x), names(x))
+  H
+}
+
+# ----------------------------------------------------------------
+# funcion principal
+# ----------------------------------------------------------------
+stata_boxcox <- function(formula, data,
+                          model = c("lhsonly", "rhsonly", "lambda", "theta"),
+                          notrans = NULL, noconstant = FALSE,
+                          level = 0.95, lrtest = TRUE,
+                          test_values = c(-1, 0, 1), start = NULL) {
+
+  model <- match.arg(model)
+  mf <- model.frame(formula, data)
+  y <- model.response(mf)
+  depvar <- as.character(formula[[2]])
+  Xfull <- model.matrix(formula, mf)[, -1, drop = FALSE]  # sin intercepto propio
+  vnames <- colnames(Xfull)
+
+  if (model == "lhsonly") {
+    z_names <- vnames; x_names <- character(0)
+  } else {
+    if (is.null(notrans)) notrans <- character(0)
+    z_names <- intersect(vnames, notrans)
+    x_names <- setdiff(vnames, notrans)
+  }
+  Z <- if (length(z_names)) Xfull[, z_names, drop = FALSE] else NULL
+  Xtrans <- if (length(x_names)) Xfull[, x_names, drop = FALSE] else NULL
+
+  # --- validacion de positividad (igual que el manual: "Any depvar or
+  #     indepvars to be transformed must be strictly positive") ---
+  if (model %in% c("theta", "lhsonly", "lambda") && any(y <= 0))
+    stop("depvar debe ser estrictamente positiva para el modelo '", model, "'.")
+  if (!is.null(Xtrans) && model %in% c("theta", "lambda", "rhsonly")) {
+    if (any(Xtrans <= 0))
+      stop("Las variables a transformar deben ser estrictamente positivas.")
+  }
+
+  sum_ln_y <- sum(log(y))
+  N <- length(y)
+
+  # noconstant + modelo de comparacion sin covariables = diseno vacio
+  # (indefinido). El propio manual de Stata desaconseja noconstant por
+  # este tipo de problema de convergencia; aqui simplemente omitimos el
+  # LR chi2 global en ese caso en lugar de fallar.
+  .safe_fit <- function(...) tryCatch(.fit_one(...), error = function(e) NULL)
+
+  # ---- 1) modelo completo ----
+  full <- .fit_one(y, Xtrans, Z, model, noconstant, start, sum_ln_y)
+
+  # ---- 2) modelo de comparacion (sin covariables) para LR chi2 global ----
+  comp <- .safe_fit(y, NULL, NULL, model, noconstant, start, sum_ln_y)
+  df_slopes <- length(x_names) + length(z_names)
+  extra_df <- if (model %in% c("theta", "rhsonly") && length(x_names) > 0) 1 else 0
+  df_m <- df_slopes + extra_df
+  chi2_global <- if (!is.null(comp)) 2 * (full$ll - comp$ll) else NA_real_
+
+  # ---- 3) SE / IC para lambda y/o theta (Wald, via hessiano numerico) ----
+  se_par <- rep(NA_real_, length(full$par))
+  if (length(full$par) > 0) {
+    V <- tryCatch(solve(full$hessian), error = function(e) matrix(NA, length(full$par), length(full$par)))
+    se_par <- sqrt(diag(V))
+  }
+  z_alpha <- qnorm(1 - (1 - level) / 2)
+  par_tab <- if (length(full$par)) {
+    zval <- full$par / se_par
+    pval <- 2 * pnorm(-abs(zval))
+    data.frame(coef = full$par, se = se_par, z = zval, p = pval,
+               lower = full$par - z_alpha * se_par,
+               upper = full$par + z_alpha * se_par,
+               row.names = names(full$par))
+  } else NULL
+
+  # ---- 4) tabla de "parametros scale-variant": LR test variable por
+  #     variable (se elimina cada regresor y se reoptimiza el modelo) ----
+  scale_tab <- NULL
+  if (lrtest) {
+    all_names <- c(z_names, x_names)
+    rows <- list()
+    for (nm in all_names) {
+      z2 <- if (nm %in% z_names) Z[, setdiff(z_names, nm), drop = FALSE] else Z
+      x2 <- if (nm %in% x_names) Xtrans[, setdiff(x_names, nm), drop = FALSE] else Xtrans
+      if (!is.null(z2) && ncol(z2) == 0) z2 <- NULL
+      if (!is.null(x2) && ncol(x2) == 0) x2 <- NULL
+      red <- .safe_fit(y, x2, z2, model, noconstant, start, sum_ln_y)
+      chi2 <- if (!is.null(red)) 2 * (full$ll - red$ll) else NA_real_
+      rows[[nm]] <- data.frame(group = if (nm %in% z_names) "Notrans" else "Trans",
+                                variable = nm, coef = full$coef[[nm]],
+                                chi2 = chi2, df = 1, p = pchisq(chi2, 1, lower.tail = FALSE))
+    }
+    scale_tab <- do.call(rbind, rows)
+    rownames(scale_tab) <- NULL
+  }
+
+  # ---- 5) tests LR contra valores fijos (lambda=theta=-1,0,1, etc.) ----
+  fixed_tab <- NULL
+  if (length(full$par) > 0) {
+    rows <- list()
+    for (c0 in test_values) {
+      lam0 <- if ("lambda" %in% full$free) c0 else 1
+      th0  <- if ("theta"  %in% full$free) c0 else 1
+      r <- .cll(y, Xtrans, Z, model, lam0, th0, noconstant, sum_ln_y)
+      chi2 <- 2 * (full$ll - r$ll)
+      df <- length(full$free)
+      lbl <- paste(full$free, "=", c0, collapse = ", ")
+      rows[[as.character(c0)]] <- data.frame(H0 = lbl, ll_restricted = r$ll,
+                                              chi2 = chi2, df = df,
+                                              p = pchisq(chi2, df, lower.tail = FALSE))
+    }
+    fixed_tab <- do.call(rbind, rows); rownames(fixed_tab) <- NULL
+  }
+
+  out <- list(call = match.call(), model = model, depvar = depvar,
+              x_names = x_names, z_names = z_names, N = N,
+              ll = full$ll, ll_comparison = if (!is.null(comp)) comp$ll else NA_real_,
+              chi2_global = chi2_global, df_m = df_m,
+              p_global = if (is.na(chi2_global)) NA_real_ else pchisq(chi2_global, df_m, lower.tail = FALSE),
+              par_table = par_tab, coef = full$coef, sigma2 = full$sigma2,
+              sigma = sqrt(full$sigma2), scale_table = scale_tab,
+              fixed_table = fixed_tab, level = level, resid = full$resid)
+  class(out) <- "stata_boxcox"
+  out
+}
+
+print.stata_boxcox <- function(x, digits = 7, ...) {
+  cat("Modelo Box-Cox tipo '", x$model, "'  (depvar: ", x$depvar, ")\n", sep = "")
+  cat(sprintf("Number of obs = %d\n", x$N))
+  if (is.na(x$chi2_global)) {
+    cat("LR chi2 global: no disponible (con noconstant y sin covariables el\n")
+    cat("  modelo de comparacion queda indefinido; ver nota del manual sobre noconstant)\n")
+  } else {
+    cat(sprintf("LR chi2(%d)   = %.2f\n", x$df_m, x$chi2_global))
+  }
+  cat(sprintf("Log likelihood = %.4f     Prob > chi2 = %s\n\n", x$ll,
+              if (is.na(x$p_global)) "NA" else sprintf("%.4f", x$p_global)))
+
+  if (!is.null(x$par_table)) {
+    cat("Parametro(s) de transformacion:\n")
+    print(round(x$par_table, digits)); cat("\n")
+  }
+
+  cat("Coeficientes (a nivel del optimo lambda/theta):\n")
+  cf <- data.frame(coef = x$coef)
+  print(round(cf, digits)); cat("\n")
+
+  if (!is.null(x$scale_table)) {
+    cat("LR tests por variable (H0: coeficiente = 0) -- 'scale-variant parameters':\n")
+    print(x$scale_table, digits = digits); cat("\n")
+  }
+
+  cat(sprintf("sigma = %.7f\n\n", x$sigma))
+
+  if (!is.null(x$fixed_table)) {
+    cat("LR tests contra formas funcionales fijas:\n")
+    print(x$fixed_table, digits = digits)
+  }
+  invisible(x)
+}
