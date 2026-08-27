@@ -53,12 +53,20 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
   y <- model.response(mf)
   y_name <- names(mf)[1] 
   
+  # NEW: Check if dependent variable is continuous
+  if (!is.numeric(y) || is.factor(y) || length(unique(y)) <= 2) {
+    stop(sprintf("The dependent variable '%s' must be a continuous numeric vector.", y_name))
+  }
+  
+  # NEW: Formal strictly positive check for dependent variable
+  if (any(y <= 0, na.rm = TRUE)) {
+    stop(sprintf("The dependent variable '%s' must contain only strictly positive values (y > 0).", y_name))
+  }
+  
   X_mat <- model.matrix(formula, mf)
   if ("(Intercept)" %in% colnames(X_mat)) {
     X_mat <- X_mat[, colnames(X_mat) != "(Intercept)", drop = FALSE]
   }
-  
-  if (any(y <= 0, na.rm = TRUE)) stop("The dependent variable (", y_name, ") must be strictly positive.")
   
   if (!is.null(notrans)) {
     missing_vars <- setdiff(notrans, colnames(X_mat))
@@ -77,8 +85,11 @@ box.cox <- function(formula, data, notrans = NULL, model = "theta",
     X_notrans <- NULL
   }
   
+  # NEW: Formal strictly positive check for independent variables to be transformed
   if (model != "lhsonly") {
-    if (any(X_trans <= 0, na.rm = TRUE)) stop("Independent variables to transform must be strictly positive.")
+    if (any(X_trans <= 0, na.rm = TRUE)) {
+      stop("All independent variables designated for transformation must contain only strictly positive values (x > 0).")
+    }
   }
   
   var_names_trans <- colnames(X_trans)
