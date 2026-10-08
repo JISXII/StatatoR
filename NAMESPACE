@@ -1,0 +1,10 @@
+export(ext_summary)
+
+S3method(ext_summary,lm)
+S3method(ext_summary,glm)
+S3method(ext_summary,multinom)
+S3method(ext_summary,polr)
+S3method(ext_summary,clogit)
+S3method(ext_summary,mlogit)
+S3method(ext_summary,default)
+S3method(print,ext_summary)
