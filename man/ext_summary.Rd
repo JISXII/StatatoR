@@ -72,8 +72,11 @@ ext_summary(
 
 \item{vce}{"standard", "robust", or "cluster".}
 
-\item{eform}{Exponentiate logistic slope coefficients; auxiliary parameters
-remain on their original scale. Multinomial output reports relative risk ratios.}
+\item{eform}{Show original coefficients alongside exponentiated estimates:
+odds ratios for supported logistic models, relative risk ratios for multinomial
+logit, and incidence-rate ratios for count models. Standard errors and confidence
+intervals refer to exponentiated estimates; auxiliary parameters stay on their
+original scale. The returned coefficient column always stores original values.}
 
 \item{level}{Confidence level, proportion or percentage.}
 

@@ -1,7 +1,7 @@
 Package: statator
 Type: Package
 Title: Econometric Tools for R
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: person("Javier", "TuApellido",
                   email = "jinfantesh@gmail.com",
                   role = c("aut", "cre"))
@@ -11,7 +11,8 @@ Imports:
     stats,
     utils,
     graphics,
-    grDevices
+    grDevices,
+    rlang
 Suggests:
     sandwich,
     numDeriv,
@@ -21,6 +22,9 @@ Suggests:
     MASS,
     survival,
     ivreg,
-    fixest (>= 0.14.2)
+    fixest (>= 0.14.2),
+    marginaleffects (>= 1.0.0),
+    ggplot2,
+    insight
 Encoding: UTF-8
 Config/roxygen2/version: 8.1.0

@@ -10,8 +10,11 @@
 #' @param ... Arguments forwarded by S3 methods to the summary calculation;
 #' additional print arguments are ignored.
 #' @param vce "standard", "robust", or "cluster".
-#' @param eform Exponentiate logistic slope coefficients; auxiliary parameters
-#' remain on their original scale. Multinomial output reports relative risk ratios.
+#' @param eform Show original coefficients alongside exponentiated estimates:
+#' odds ratios for supported logistic models, relative risk ratios for multinomial
+#' logit, and incidence-rate ratios for count models. Standard errors and confidence
+#' intervals refer to exponentiated estimates; auxiliary parameters stay on their
+#' original scale. The returned coefficient column always stores original values.
 #' @param level Confidence level, proportion or percentage.
 #' @param digits Decimal places for display only, from 0 to 12.
 #' @param vcov Named covariance matrix on the original parameter scale.
@@ -875,7 +878,7 @@ ext_summary.default <- function(model, ...) {
   lower[transform] <- exp(lower[transform]); upper[transform] <- exp(upper[transform])
   tab <- data.frame(estimate = estimate, std.error = displayed_se, statistic = statistic, p.value = p,
                     conf.low = lower, conf.high = upper, omitted = !keep,
-                    auxiliary = aux, group = d$group, term = d$term,
+                    auxiliary = aux, group = d$group, term = d$term, coefficient = b,
                     row.names = names(b), check.names = FALSE)
   k <- d$k; n <- if (is.null(bic_n)) d$n else bic_n
   fit <- list(n = d$n, parameters = k, log_likelihood = d$ll,
@@ -1031,6 +1034,9 @@ ext_summary.default <- function(model, ...) {
     if (d$type %in% c("poisson","negbin","fixest_poisson","fixest_negbin"))
       "Exponentiated slopes are incidence-rate ratios (IRR); dispersion stays on its original scale." else
       "Exponentiated slopes are odds ratios; auxiliary parameters remain on their original scale.")
+  if (eform) notes <- c(notes,
+    "Coefficient is on the original scale. Std. Error and CI refer to the ratio; auxiliary rows retain their original scale.",
+    "z/t and p-values test Coefficient = 0 (equivalently, ratio = 1).")
   if (any(!keep)) notes <- c(notes, paste("Omitted (aliased):", paste(names(b)[!keep], collapse = ", ")))
   if (any(!is.finite(tab$estimate[keep]) | !is.finite(tab$std.error[keep]) | !is.finite(tab$conf.high[keep])))
     notes <- c(notes, "Some displayed estimates or intervals overflow; inspect the original coefficient scale.")
@@ -1160,13 +1166,15 @@ print.ext_summary <- function(x, digits = x$digits, only_test = x$only_test, ...
   if (is.null(tab$term)) tab$term <- rownames(tab)
   name_width <- max(12L, nchar(tab$term))
   number_width <- max(12L, digits + 6L)
-  separator <- strrep("-", name_width + 6L * (number_width + 1L) + 9L)
+  show_coefficient <- isTRUE(x$eform) && "coefficient" %in% names(tab)
+  separator <- strrep("-", name_width + (6L + show_coefficient) * (number_width + 1L) + 9L)
   cat("\n", separator, "\n", sep = "")
   labels <- c(if (x$eform) if (x$model_type %in% c("multinomial", "multinomial_choice")) "RRR" else
               if (x$model_type %in% c("poisson","negbin","fixest_poisson","fixest_negbin")) "IRR" else "Odds Ratio" else "Coefficient", "Std. Error",
               if (is.finite(x$inference_df)) "t" else "z",
               if (is.finite(x$inference_df)) "P>|t|" else "P>|z|", "CI Lower", "CI Upper")
   cat(sprintf("%-*s |", name_width, "Variable"))
+  if (show_coefficient) cat(sprintf("%*s ", number_width, "Coefficient"))
   header_values <- sprintf("%*s", number_width, labels)
   cat(paste(c(header_values[1:4], " Sig.", header_values[5:6]), collapse = " "), "\n", sep = "")
   cat(separator, "\n", sep = "")
@@ -1177,6 +1185,10 @@ print.ext_summary <- function(x, digits = x$digits, only_test = x$only_test, ...
     values <- c(fmt(tab$estimate[i]), fmt(tab$std.error[i]), fmt(tab$statistic[i], 2),
                 fmt(tab$p.value[i], 3), fmt(tab$conf.low[i]), fmt(tab$conf.high[i]))
     cat(sprintf("%-*s |", name_width, tab$term[i]))
+    if (show_coefficient) {
+      cat(sprintf("%*s ", number_width, fmt(tab$coefficient[i])))
+      if (tab$auxiliary[i]) values[1] <- "."
+    }
     significance <- if (is.na(tab$p.value[i])) "" else
       as.character(stats::symnum(tab$p.value[i], corr = FALSE, na = FALSE,
                    cutpoints = c(0, .001, .01, .05, .1, 1),
